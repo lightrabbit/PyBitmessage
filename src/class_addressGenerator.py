@@ -8,17 +8,26 @@ import hashlib
 import highlevelcrypto
 from addresses import *
 from debug import logger
+from helper_threading import *
 from pyelliptic import arithmetic
 import tr
 
-class addressGenerator(threading.Thread):
+class addressGenerator(threading.Thread, StoppableThread):
 
     def __init__(self):
         # QThread.__init__(self, parent)
-        threading.Thread.__init__(self)
+        threading.Thread.__init__(self, name="addressGenerator")
+        self.initStop()
+        
+    def stopThread(self):
+        try:
+            shared.addressGeneratorQueue.put(("stopThread", "data"))
+        except:
+            pass
+        super(addressGenerator, self).stopThread()
 
     def run(self):
-        while True:
+        while shared.shutdown == 0:
             queueValue = shared.addressGeneratorQueue.get()
             nonceTrialsPerByte = 0
             payloadLengthExtraBytes = 0
@@ -54,6 +63,8 @@ class addressGenerator(threading.Thread):
                         numberOfNullBytesDemandedOnFrontOfRipeHash = 2
                     else:
                         numberOfNullBytesDemandedOnFrontOfRipeHash = 1 # the default
+            elif queueValue[0] == 'stopThread':
+                break
             else:
                 sys.stderr.write(
                     'Programming error: A structure with the wrong number of values was passed into the addressGeneratorQueue. Here is the queueValue: %s\n' % repr(queueValue))
@@ -131,7 +142,8 @@ class addressGenerator(threading.Thread):
 
                 # The API and the join and create Chan functionality
                 # both need information back from the address generator.
-                shared.apiAddressGeneratorReturnQueue.put(address)
+                if shared.safeConfigGetBoolean('bitmessagesettings', 'apienabled'):
+                    shared.apiAddressGeneratorReturnQueue.put(address)
 
                 shared.UISignalQueue.put((
                     'updateStatusBar', tr.translateText("MainWindow", "Done generating address. Doing work necessary to broadcast it...")))
@@ -150,10 +162,8 @@ class addressGenerator(threading.Thread):
                     sys.stderr.write(
                         'WARNING: You are creating deterministic address(es) using a blank passphrase. Bitmessage will do it but it is rather stupid.')
                 if command == 'createDeterministicAddresses':
-                    statusbar = 'Generating ' + str(
-                        numberOfAddressesToMake) + ' new addresses.'
                     shared.UISignalQueue.put((
-                        'updateStatusBar', statusbar))
+                                'updateStatusBar', tr.translateText("MainWindow","Generating %1 new addresses.").arg(str(numberOfAddressesToMake))))
                 signingKeyNonce = 0
                 encryptionKeyNonce = 1
                 listOfNewAddressesToSendOutThroughTheAPI = [
@@ -199,7 +209,8 @@ class addressGenerator(threading.Thread):
                     # If we are joining an existing chan, let us check to make sure it matches the provided Bitmessage address
                     if command == 'joinChan':
                         if address != chanAddress:
-                            shared.apiAddressGeneratorReturnQueue.put('chan name does not match address')
+                            if shared.safeConfigGetBoolean('bitmessagesettings', 'apienabled'):
+                                shared.apiAddressGeneratorReturnQueue.put('chan name does not match address')
                             saveAddressToDisk = False
                     if command == 'getDeterministicAddress':
                         saveAddressToDisk = False
@@ -270,12 +281,13 @@ class addressGenerator(threading.Thread):
 
 
                 # Done generating addresses.
-                if command == 'createDeterministicAddresses' or command == 'joinChan' or command == 'createChan':
-                    shared.apiAddressGeneratorReturnQueue.put(
-                        listOfNewAddressesToSendOutThroughTheAPI)
-                elif command == 'getDeterministicAddress':
-                    shared.apiAddressGeneratorReturnQueue.put(address)
+                if shared.safeConfigGetBoolean('bitmessagesettings', 'apienabled'):
+                    if command == 'createDeterministicAddresses' or command == 'joinChan' or command == 'createChan':
+                        shared.apiAddressGeneratorReturnQueue.put(
+                            listOfNewAddressesToSendOutThroughTheAPI)
+                    elif command == 'getDeterministicAddress':
+                        shared.apiAddressGeneratorReturnQueue.put(address)
             else:
                 raise Exception(
                     "Error in the addressGenerator thread. Thread was given a command it could not understand: " + command)
-
+            shared.addressGeneratorQueue.task_done()
